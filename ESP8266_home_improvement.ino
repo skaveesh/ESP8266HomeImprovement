@@ -20,6 +20,9 @@ IPAddress secondaryDNS(8, 8, 8, 8); //optional
 const char* host = "192.168.1.3";
 const int httpPort = 8998; //plex port
 
+const char* piHost = "192.168.1.4";
+const int piHttpPort = 8082; //plex port
+
 //IR receiver
 int RECV_PIN = 4;
 IRrecv irrecv(RECV_PIN);
@@ -47,6 +50,8 @@ bool executed = false;
 static const unsigned long RPI_REFRESH_INTERVAL = 60000*5; // ms
 static unsigned long lastRefreshTimeOfRPi = 0;
 IPAddress rPiHost(192,168,1,4);
+
+int timer = 0;
 
 void setup()
 {
@@ -94,8 +99,7 @@ void setup()
 
 void loop()
 {
-  if (irrecv.decode(&results))
-  {
+  if (irrecv.decode(&results)){
 
     switch (results.value) {
       case 0X5EA103FD:
@@ -169,34 +173,31 @@ void loop()
     executed = true;
   }
 
-  //RPI shutdown dispatcher
-  if (millis() - lastRefreshTimeOfRPi >= RPI_REFRESH_INTERVAL)
-  {
-    lastRefreshTimeOfRPi += RPI_REFRESH_INTERVAL;
-    dispatchShutdown();
-  }
-
   server.handleClient();
   delay(150);
 }
 
 void previous() {
-  connectClientGET("/plex?action=back");
+  connectPlexServer("/plex?action=back");
 }
 
 void next() {
-  connectClientGET("/plex?action=forward");
+  connectPlexServer("/plex?action=forward");
 }
 
 void playPause() {
-  connectClientGET("/plex?action=playpause");
+  connectPlexServer("/plex?action=playpause");
 }
 
 void pauseAndMinimize() {
-  connectClientGET("/plex?action=pausemin");
+  connectPlexServer("/plex?action=pausemin");
 }
 
-void connectClientGET(String url) {
+void connectPlexServer(String url) {
+    connectClientGET(url, host, httpPort);
+}
+
+void connectClientGET(String url, char* host, int port) {
 
   Serial.print("connecting to ");
   Serial.println(host);
@@ -293,14 +294,6 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-//shutdown dispatcher for RPi
-void dispatchShutdown() {
-  bool rpiPingStatus = Ping.ping(rPiHost, 4);
-  Serial.println("RPi ping");
-  Serial.print(rpiPingStatus);
-  Serial.println();
-}
-
 // Builtin LED Signal
 void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, LOW);
@@ -310,4 +303,16 @@ void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, LOW);
   delay(80);
   digitalWrite(LED_BUILTIN, HIGH);
+}
+
+bool getNightfall() {
+  // Since the main loop goes on every 150ms, execute every 5 minutes
+  while(timer > 400*5) {
+   timer = 0;
+  }
+
+
+
+  timer++;
+}
 }
