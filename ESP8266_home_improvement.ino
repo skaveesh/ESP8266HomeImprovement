@@ -132,13 +132,7 @@ void loop()
             // Executing Bluetooth relay
             ledIndicateOnSignalReceive();
 
-            if (bluetoothPinRelayOn) {
-              digitalWrite(bluetoothPin, HIGH);
-              bluetoothPinRelayOn = false;
-            } else {
-              digitalWrite(bluetoothPin, LOW);
-              bluetoothPinRelayOn = true;
-            }
+            // Removed code for turning on the second relay
 
             executed = true;
           }
