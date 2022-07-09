@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266Ping.h>
 #include <WiFiClient.h>
+#include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 
@@ -20,8 +21,9 @@ IPAddress secondaryDNS(8, 8, 8, 8); //optional
 const char* host = "192.168.1.3";
 const int httpPort = 8998; //plex port
 
-const char* piHost = "192.168.1.4";
-const int piHttpPort = 8082; //plex port
+//Night fall server host
+const char* nfHost = "192.168.1.4";
+const int nfHttpPort = 8082; //night fall port
 
 //IR receiver
 int RECV_PIN = 4;
@@ -33,8 +35,8 @@ const int roomLightPin = 0;
 bool roomLightRelayOn = false;
 
 //relay 2
-const int bluetoothPin = 5;
-bool bluetoothPinRelayOn = false;
+const int homeLightPin = 5;
+bool homeLightPinRelayOn = false;
 
 //web server
 ESP8266WebServer server(80);
@@ -49,22 +51,29 @@ bool executed = false;
 //RPi shutdown dispatcher variables
 static const unsigned long RPI_REFRESH_INTERVAL = 60000*5; // ms
 static unsigned long lastRefreshTimeOfRPi = 0;
-IPAddress rPiHost(192,168,1,4);
 
-int timer = 0;
+//AC relay pin
+int acRelayInputPin = 16;
+int acRelayState = 0;
+
+int nightFallCounter = 0;
 
 void setup()
 {
   Serial.begin(115200);
+
+//Serial.setDebugOutput(true);
+  
   irrecv.enableIRIn(); // Start the receiver
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(roomLightPin, OUTPUT);
-  pinMode(bluetoothPin, OUTPUT);
+  pinMode(homeLightPin, OUTPUT);
+  pinMode(acRelayInputPin, INPUT);
 
   //turning off relays
   digitalWrite(roomLightPin, HIGH);
-  digitalWrite(bluetoothPin, HIGH);
+  digitalWrite(homeLightPin, HIGH);
 
   delay(10);
 
@@ -174,6 +183,11 @@ void loop()
   }
 
   server.handleClient();
+
+  handleAcRelay();
+  connectNightFallServer();
+  
+
   delay(150);
 }
 
@@ -193,26 +207,50 @@ void pauseAndMinimize() {
   connectPlexServer("/plex?action=pausemin");
 }
 
+void connectNightFallServer() {
+  if(getNightfallTimer()){
+    connectClientGET("", nfHost, nfHttpPort);
+  } 
+}
+
 void connectPlexServer(String url) {
     connectClientGET(url, host, httpPort);
 }
 
-void connectClientGET(String url, char* host, int port) {
+void connectClientGET(String url, const char * host, int port) {
 
   Serial.print("connecting to ");
   Serial.println(host);
 
   WiFiClient client; //Client to handle TCP Connection
+  HTTPClient http;
 
-  if (!client.connect(host, httpPort)) { //Connect to server using port httpPort
-    Serial.println("connection failed");
+  if (!client.connect(host, port)) { //Connect to server using port httpPort
+    Serial.println("Connection Failed");
     return;
   }
 
-  // This will send the request to the server
-  client.print(String("GET ") + url + " HTTP/1.1\r\n" +
-               "Host: " + host + "\r\n" +
-               "Connection: close\r\n\r\n");
+  char serverPath[200];
+  sprintf(serverPath, "http://%s:%d%s", host, port, url);
+
+  Serial.print("Http server path: " + serverPath);
+
+  http.begin(client, serverPath);  //Specify request destination
+ 
+  int httpResponseCode = http.GET();
+
+  if (httpResponseCode > 0) { //Check the returning code
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+    String payload = http.getString();
+    Serial.println(payload);
+  } else {
+    Serial.print("Error code: ");
+    Serial.println(httpResponseCode);
+  }
+  
+  http.end();  
+
   unsigned long timeout = millis();
   while (client.available() == 0) {
     if (millis() - timeout > 25000) { //Try to fetch response for 25 seconds
@@ -294,6 +332,14 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
+void handleAcRelay() {
+  acRelayState = digitalRead(acRelayInputPin);
+
+  if (acRelayState == LOW) {
+    nightFallCounter = 0;
+  }
+}
+
 // Builtin LED Signal
 void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, LOW);
@@ -305,14 +351,11 @@ void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
-bool getNightfall() {
+bool getNightfallTimer() {
   // Since the main loop goes on every 150ms, execute every 5 minutes
-  while(timer > 400*5) {
-   timer = 0;
+  while(nightFallCounter > 40*5) {
+   nightFallCounter = 0;
   }
-
-
-
-  timer++;
-}
+  nightFallCounter++;
+  return nightFallCounter-1 == 0;
 }
