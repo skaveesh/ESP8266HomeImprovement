@@ -6,6 +6,8 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 const char* ssid     = "ABCD"; //Wi-Fi SSID
 const char* password = "ABCD"; //Wi-Fi Password
@@ -25,6 +27,10 @@ const int httpPort = 8998; //plex port
 const char* nfHost = "192.168.1.4";
 const int nfHttpPort = 8082; //night fall port
 
+//Nightfall server response
+const String timeEqualOrGreaterThanSix = "{\"isTimeEqualOrGreaterThanSix\": true}";
+const String timeNotEqualOrGreaterThanSix = "{\"isTimeEqualOrGreaterThanSix\": false}";
+
 //IR receiver
 int RECV_PIN = 4;
 IRrecv irrecv(RECV_PIN);
@@ -36,7 +42,7 @@ bool roomLightRelayOn = false;
 
 //relay 2
 const int homeLightPin = 5;
-bool homeLightPinRelayOn = false;
+bool homeLightRelayOn = false;
 
 //web server
 ESP8266WebServer server(80);
@@ -57,6 +63,11 @@ int acRelayInputPin = 16;
 int acRelayState = 0;
 
 int nightFallCounter = 0;
+
+//time client
+WiFiUDP ntpUDP;
+const long utcOffsetInSeconds = 19800;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 void setup()
 {
@@ -104,6 +115,8 @@ void setup()
   server.onNotFound(handleNotFound);
   // Start server
   server.begin();
+  // Start time client
+  timeClient.begin();
 }
 
 void loop()
@@ -145,7 +158,13 @@ void loop()
             // Executing Bluetooth relay
             ledIndicateOnSignalReceive();
 
-            // Removed code for turning on the second relay
+            if (homeLightRelayOn) {
+              digitalWrite(homeLightPin, HIGH);
+              homeLightRelayOn = false;
+            } else {
+              digitalWrite(homeLightPin, LOW);
+              homeLightRelayOn = true;
+            }
 
             executed = true;
           }
@@ -184,9 +203,7 @@ void loop()
 
   server.handleClient();
 
-  handleAcRelay();
-  connectNightFallServer();
-  
+  handleAcRelayAndNightFallServer();
 
   delay(150);
 }
@@ -207,42 +224,93 @@ void pauseAndMinimize() {
   connectPlexServer("/plex?action=pausemin");
 }
 
-void connectNightFallServer() {
-  if(getNightfallTimer()){
-    connectClientGET("", nfHost, nfHttpPort);
-  } 
-}
-
 void connectPlexServer(String url) {
-    connectClientGET(url, host, httpPort);
+  connectClientGET(url, host, httpPort);
 }
 
-void connectClientGET(String url, const char * host, int port) {
+// Auto relay on only works after 6PM
+void handleAcRelayAndNightFallServer() {
+  acRelayState = digitalRead(acRelayInputPin);
+
+  if (acRelayState == LOW && getNightfallTimer()){
+    timeClient.update();
+
+    if (timeClient.getHours() >= 18){
+      if(!roomLightRelayOn) {
+        digitalWrite(roomLightPin, LOW);
+      }
+  
+      if (!homeLightRelayOn) {
+        digitalWrite(homeLightPin, LOW);
+      }
+      
+    }   
+  }
+
+  if(acRelayState == HIGH){
+    nightFallCounter = 0;
+
+    if(!roomLightRelayOn) {
+      digitalWrite(roomLightPin, HIGH);
+    }
+
+    if (!homeLightRelayOn) {
+      digitalWrite(homeLightPin, HIGH);
+    }
+  }  
+
+}
+
+// Since the main loop goes on every 150ms, execute every 5 minutes (150ms x 400 x 5 = 60s x 5 = 5min)
+bool getNightfallTimer() {
+  if(nightFallCounter > 40*5) {
+   nightFallCounter = 0;
+  }
+  nightFallCounter++;
+  return nightFallCounter-1 == 0;
+}
+
+String connectClientGET(String url, const char * host, int port) {
 
   Serial.print("connecting to ");
   Serial.println(host);
-
+   
   WiFiClient client; //Client to handle TCP Connection
+  client.setTimeout(30000);
+  
   HTTPClient http;
+
+  String payload;
 
   if (!client.connect(host, port)) { //Connect to server using port httpPort
     Serial.println("Connection Failed");
-    return;
+    return "";
   }
 
   char serverPath[200];
   sprintf(serverPath, "http://%s:%d%s", host, port, url);
 
-  Serial.print("Http server path: " + serverPath);
+  Serial.print("Http server path: ");
+  Serial.println(serverPath);
 
   http.begin(client, serverPath);  //Specify request destination
  
   int httpResponseCode = http.GET();
 
+
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 25000) { //Try to fetch response for 25 seconds
+      Serial.println(">>> Client Timeout !");
+      client.stop();
+      return "";
+    }
+  }
+
   if (httpResponseCode > 0) { //Check the returning code
     Serial.print("HTTP Response code: ");
     Serial.println(httpResponseCode);
-    String payload = http.getString();
+    payload = http.getString();
     Serial.println(payload);
   } else {
     Serial.print("Error code: ");
@@ -251,19 +319,11 @@ void connectClientGET(String url, const char * host, int port) {
   
   http.end();  
 
-  unsigned long timeout = millis();
-  while (client.available() == 0) {
-    if (millis() - timeout > 25000) { //Try to fetch response for 25 seconds
-      Serial.println(">>> Client Timeout !");
-      client.stop();
-      return;
-    }
-  }
-
   //not reading output from the server
-  Serial.println();
   Serial.println("closing connection");
   client.stop(); //Close Connection
+
+  return payload;
 }
 
 // Serving room lights relay on
@@ -332,14 +392,6 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-void handleAcRelay() {
-  acRelayState = digitalRead(acRelayInputPin);
-
-  if (acRelayState == LOW) {
-    nightFallCounter = 0;
-  }
-}
-
 // Builtin LED Signal
 void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, LOW);
@@ -349,13 +401,4 @@ void ledIndicateOnSignalReceive() {
   digitalWrite(LED_BUILTIN, LOW);
   delay(80);
   digitalWrite(LED_BUILTIN, HIGH);
-}
-
-bool getNightfallTimer() {
-  // Since the main loop goes on every 150ms, execute every 5 minutes
-  while(nightFallCounter > 40*5) {
-   nightFallCounter = 0;
-  }
-  nightFallCounter++;
-  return nightFallCounter-1 == 0;
 }
