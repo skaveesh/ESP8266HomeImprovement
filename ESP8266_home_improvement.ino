@@ -23,14 +23,6 @@ IPAddress secondaryDNS(8, 8, 8, 8); //optional
 const char* host = "192.168.1.3";
 const int httpPort = 8998; //plex port
 
-//Night fall server host
-const char* nfHost = "192.168.1.4";
-const int nfHttpPort = 8082; //night fall port
-
-//Nightfall server response
-const String timeEqualOrGreaterThanSix = "{\"isTimeEqualOrGreaterThanSix\": true}";
-const String timeNotEqualOrGreaterThanSix = "{\"isTimeEqualOrGreaterThanSix\": false}";
-
 //IR receiver
 int RECV_PIN = 4;
 IRrecv irrecv(RECV_PIN);
@@ -39,10 +31,12 @@ decode_results results;
 //relay 1
 const int roomLightPin = 0;
 bool roomLightRelayOn = false;
+bool roomLightRelayTurnedOffWhileAcDown = false;
 
 //relay 2
 const int homeLightPin = 5;
 bool homeLightRelayOn = false;
+bool homeLightRelayTurnedOffWhileAcDown = false;
 
 //web server
 ESP8266WebServer server(80);
@@ -53,10 +47,6 @@ unsigned long startTime = 0;
 unsigned long currentTime = 0;
 unsigned long elapsedTime = 0;
 bool executed = false;
-
-//RPi shutdown dispatcher variables
-static const unsigned long RPI_REFRESH_INTERVAL = 60000*5; // ms
-static unsigned long lastRefreshTimeOfRPi = 0;
 
 //AC relay pin
 int acRelayInputPin = 16;
@@ -105,6 +95,8 @@ void setup()
     Serial.print(".");
   }
 
+  Serial.println("");
+  
   if (MDNS.begin("esp8266")) {
     Serial.println("MDNS responder started");
   }
@@ -155,7 +147,7 @@ void loop()
           if (!executed && (elapsedTime == 19 || elapsedTime == 20 || elapsedTime == 21) && lastExecutedIRCommand  == 50174055) {
             Serial.println("Executing 0X2FD9867 on long press");
 
-            // Executing Bluetooth relay
+            // Executing home light relay
             ledIndicateOnSignalReceive();
 
             if (homeLightRelayOn) {
@@ -235,13 +227,20 @@ void handleAcRelayAndNightFallServer() {
   if (acRelayState == LOW && getNightfallTimer()){
     timeClient.update();
 
+    Serial.print("Receiving the current hour: ");
+    Serial.println(timeClient.getHours());
+
     if (timeClient.getHours() >= 18){
-      if(!roomLightRelayOn) {
+      if (!roomLightRelayOn && !roomLightRelayTurnedOffWhileAcDown) {
         digitalWrite(roomLightPin, LOW);
+        roomLightRelayOn = true;
+        roomLightRelayTurnedOffWhileAcDown = true;
       }
   
-      if (!homeLightRelayOn) {
+      if (!homeLightRelayOn && !homeLightRelayTurnedOffWhileAcDown) {
         digitalWrite(homeLightPin, LOW);
+        homeLightRelayOn = true;
+        homeLightRelayTurnedOffWhileAcDown = true;
       }
       
     }   
@@ -249,13 +248,17 @@ void handleAcRelayAndNightFallServer() {
 
   if(acRelayState == HIGH){
     nightFallCounter = 0;
-
-    if(!roomLightRelayOn) {
+    
+    if (roomLightRelayOn && roomLightRelayTurnedOffWhileAcDown) {
       digitalWrite(roomLightPin, HIGH);
+      roomLightRelayOn = false;
+      roomLightRelayTurnedOffWhileAcDown = false;
     }
 
-    if (!homeLightRelayOn) {
+    if (homeLightRelayOn && homeLightRelayTurnedOffWhileAcDown) {
       digitalWrite(homeLightPin, HIGH);
+      homeLightRelayOn = false;
+      homeLightRelayTurnedOffWhileAcDown = false;
     }
   }  
 
@@ -263,7 +266,7 @@ void handleAcRelayAndNightFallServer() {
 
 // Since the main loop goes on every 150ms, execute every 5 minutes (150ms x 400 x 5 = 60s x 5 = 5min)
 bool getNightfallTimer() {
-  if(nightFallCounter > 40*5) {
+  if(nightFallCounter > 400*5) {
    nightFallCounter = 0;
   }
   nightFallCounter++;
